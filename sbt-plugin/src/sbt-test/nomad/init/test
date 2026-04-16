@@ -1,0 +1,9 @@
+# Manifest should not exist yet
+$ absent src/main/scala/Nomad.scala
+
+# Init should create the manifest
+> nomadInit
+$ exists src/main/scala/Nomad.scala
+
+# Running init again should fail since manifest already exists
+-> nomadInit

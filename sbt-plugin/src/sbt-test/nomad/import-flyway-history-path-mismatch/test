@@ -1,0 +1,2 @@
+# Verify Flyway history import can remap script paths by file name when project layout changed
+> runMain ImportMismatchCheck

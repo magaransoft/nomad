@@ -1,0 +1,6 @@
+# Status with no history table yet — all should be pending
+> nomadStatus
+
+# Apply migrations, then status should show all applied
+> nomadMigrate
+> nomadStatus

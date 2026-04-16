@@ -1,0 +1,3 @@
+# Manifest already has two migrations, add one more
+> nomadCreate NewOne
+> checkIndentation

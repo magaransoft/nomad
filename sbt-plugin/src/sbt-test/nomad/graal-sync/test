@@ -1,0 +1,7 @@
+# Init and create a migration — GraalSync should insert into the existing resource-config.json
+> nomadInit
+> nomadCreate First
+
+# Verify the file has proper formatting with both patterns
+> checkResourceConfig
+> checkTwoPatterns

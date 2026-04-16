@@ -1,0 +1,3 @@
+# Verify cleanAndMigrate drops and recreates schema, then re-applies migrations
+# Also verifies safety checks: no history table, empty history table
+> run

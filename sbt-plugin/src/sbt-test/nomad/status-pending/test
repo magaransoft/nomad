@@ -1,0 +1,2 @@
+# Status with no history table — all migrations should show as pending, no failure
+> nomadStatus

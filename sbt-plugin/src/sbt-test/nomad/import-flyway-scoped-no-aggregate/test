@@ -1,0 +1,3 @@
+# A scoped import should only run for the targeted project, not its aggregated siblings.
+> app/nomadImportFlyway
+> app/checkManifest

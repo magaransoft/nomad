@@ -1,0 +1,6 @@
+# Start from nomadInit, then add three migrations sequentially
+> nomadInit
+> nomadCreate First
+> nomadCreate Second
+> nomadCreate Third
+> checkIndentation

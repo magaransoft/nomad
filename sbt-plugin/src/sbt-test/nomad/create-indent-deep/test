@@ -1,0 +1,3 @@
+# Manifest has deeper nesting (10-space indentation) — verify it's preserved
+> nomadCreate AddNew
+> checkIndentation

@@ -1,0 +1,6 @@
+# Import into a manifest that uses an empty Vector(...) form
+> nomadImportFlyway
+
+# Verify the manifest is still valid vector-based Scala
+> checkManifest
+> compile

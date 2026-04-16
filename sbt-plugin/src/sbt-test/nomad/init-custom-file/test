@@ -1,0 +1,7 @@
+# Init should create manifest at the custom path
+> nomadInit
+$ exists src/main/scala/db/MyMigrations.scala
+> checkManifest
+
+# Default path should not exist
+$ absent src/main/scala/Nomad.scala

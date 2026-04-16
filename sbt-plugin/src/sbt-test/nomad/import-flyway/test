@@ -1,0 +1,10 @@
+# Initialize manifest, then import Flyway migrations
+> nomadInit
+> nomadImportFlyway
+
+# Verify all migrations are in correct order with proper indentation
+> checkManifest
+
+# Running import again should be idempotent (no duplicates)
+> nomadImportFlyway
+> checkIdempotent

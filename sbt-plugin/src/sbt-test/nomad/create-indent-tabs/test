@@ -1,0 +1,3 @@
+# Manifest uses tab indentation — verify tabs are preserved
+> nomadCreate AddNew
+> checkIndentation

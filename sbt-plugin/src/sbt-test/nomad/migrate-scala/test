@@ -1,0 +1,8 @@
+# Test mixed SQL + Scala migrations (both no-arg and with-args forms)
+> nomadMigrate
+
+# Second run should report no pending
+> nomadMigrate
+
+# Status should show all applied
+> nomadStatus

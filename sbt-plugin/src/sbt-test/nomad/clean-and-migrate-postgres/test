@@ -1,0 +1,3 @@
+# Tests cleanAndMigrate with real PostgreSQL via embedded-postgres.
+# Covers: public schema, custom schema, missing history table, empty history table.
+> run

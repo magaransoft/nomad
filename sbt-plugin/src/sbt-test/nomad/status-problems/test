@@ -1,0 +1,9 @@
+# Apply migration, then tamper with the file to trigger bad checksum
+> nomadMigrate
+> tamperMigration
+
+# Status should fail due to bad checksum
+-> nomadStatus
+
+# Migrate should also fail due to bad checksum
+-> nomadMigrate

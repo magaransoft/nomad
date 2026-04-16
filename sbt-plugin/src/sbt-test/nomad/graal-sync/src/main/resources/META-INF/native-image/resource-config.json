@@ -1,0 +1,9 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "other/.*\\.properties"
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+# Create with description
+> nomadCreate AddUsersTable
+$ exists src/main/resources/migrations/M*_AddUsersTable.sql
+
+# Create without description
+> nomadCreate
+$ exists src/main/resources/migrations/M????????????.sql

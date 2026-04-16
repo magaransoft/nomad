@@ -1,0 +1,5 @@
+# First run should apply the migration
+> nomadMigrate
+
+# Second run should report no pending migrations
+> nomadMigrate

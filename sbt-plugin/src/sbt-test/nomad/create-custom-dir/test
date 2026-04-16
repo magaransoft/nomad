@@ -1,0 +1,6 @@
+# Migration should be created in custom directory
+> nomadCreate CustomDir
+$ exists custom-migrations/M*_CustomDir.sql
+
+# Default directory should not exist
+$ absent src/main/resources/migrations
