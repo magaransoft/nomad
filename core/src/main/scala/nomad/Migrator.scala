@@ -19,14 +19,30 @@ import scala.util.Using
   * @param migrations the ordered list of migrations to apply
   * @param historyTable the name of the table used to track applied migrations
   * @param schema the database schema to use for migrations and history tracking
+  * @param autoCreateSchema if true (default), the configured schema is created
+  *                         via `CREATE SCHEMA IF NOT EXISTS` at the start of
+  *                         `migrate()` and `cleanAndMigrate()`. Set to false when
+  *                         running under a role that lacks `CREATE` privileges.
   */
 class Migrator(
   datasource: DataSource,
   db: SupportedDatabase,
   migrations: Vector[Migration],
   historyTable: String = "nomad_migrations",
-  schema: String = "public"
+  schema: String = "public",
+  autoCreateSchema: Boolean = true
 ) {
+
+  // Preserves the 5-arg constructor signature shipped in 0.1.0 so that
+  // Java callers, pre-compiled binaries, and reflective callers using
+  // the old arity keep working after the 0.1.1 bump.
+  def this(
+    datasource: DataSource,
+    db: SupportedDatabase,
+    migrations: Vector[Migration],
+    historyTable: String,
+    schema: String
+  ) = this(datasource, db, migrations, historyTable, schema, autoCreateSchema = true)
 
   final case class FlywayImportAnalysis(
     exactMatchCount: Int,
@@ -68,6 +84,7 @@ class Migrator(
   def migrate(): Unit = {
     val conn = datasource.getConnection
     try {
+      if (autoCreateSchema) ensureSchemaExists(conn)
       setSchemaIfNeeded(conn)
       ensureHistoryTable(conn)
       val applied = loadApplied(conn)
@@ -187,6 +204,7 @@ class Migrator(
   def cleanAndMigrate(): Unit = {
     val conn = datasource.getConnection
     try {
+      if (autoCreateSchema) ensureSchemaExists(conn)
       setSchemaIfNeeded(conn)
       if (isSchemaEmpty(conn)) {
         logger.info("Instructed to clean schema, but schema is empty, nothing to clean.")
@@ -521,6 +539,17 @@ class Migrator(
     val current = conn.getSchema
     if (current == null || !current.equalsIgnoreCase(schema)) {
       conn.setSchema(schema)
+    }
+  }
+
+  private def ensureSchemaExists(conn: Connection): Unit = {
+    Using.resource(conn.createStatement()) { stmt =>
+      db match {
+        case SupportedDatabase.Postgres =>
+          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
+        case SupportedDatabase.H2 =>
+          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
+      }
     }
   }
 

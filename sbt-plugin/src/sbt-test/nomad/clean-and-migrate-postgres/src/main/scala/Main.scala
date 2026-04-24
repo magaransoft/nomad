@@ -138,6 +138,105 @@ object Main {
       conn6.close()
 
       println("Test 5 passed: cleanAndMigrate on empty schema skips clean and migrates")
+
+      // --- Test 6: cleanAndMigrate self-heals when schema does not exist (autoCreateSchema=true) ---
+      val setup5 = ds.getConnection
+      setup5.createStatement().execute("CREATE SCHEMA IF NOT EXISTS will_be_dropped")
+      setup5.close()
+      // Drop it to simulate the bug scenario
+      val drop = ds.getConnection
+      drop.createStatement().execute("DROP SCHEMA will_be_dropped CASCADE")
+      drop.close()
+
+      val missingSchemaMigrator = new Migrator(
+        ds, SupportedDatabase.Postgres, migrations, schema = "will_be_dropped"
+      )
+      missingSchemaMigrator.cleanAndMigrate()
+
+      val conn7 = ds.getConnection
+      conn7.setSchema("will_be_dropped")
+      val rs7 = conn7.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+      rs7.next()
+      assert(rs7.getLong(1) == 1, "Expected 1 migration recorded after self-heal on missing schema")
+      rs7.close()
+      conn7.close()
+
+      println("Test 6 passed: cleanAndMigrate self-heals when schema is missing")
+
+      // --- Test 7: autoCreateSchema=false reproduces the original bug (no silent creation) ---
+      // The exact symptom from the bug report: PG rejects CREATE TYPE because the missing
+      // schema left search_path pointing at a non-existent namespace.
+      val strictMigrator = new Migrator(
+        ds, SupportedDatabase.Postgres, migrations,
+        schema = "never_created", autoCreateSchema = false
+      )
+      try {
+        strictMigrator.cleanAndMigrate()
+        throw new AssertionError("Expected failure when autoCreateSchema=false and schema is missing")
+      } catch {
+        case e: RuntimeException if e.getCause != null
+            && e.getCause.getMessage != null
+            && e.getCause.getMessage.contains("no schema has been selected") =>
+          // expected — this is exactly the original bug symptom surfacing when opt-out is chosen
+        case e: org.postgresql.util.PSQLException if e.getMessage.contains("no schema has been selected") =>
+          // expected — same symptom surfaced directly
+      }
+
+      println("Test 7 passed: autoCreateSchema=false reproduces original bug symptom")
+
+      // --- Test 8: migrate() (without clean) self-heals when schema is missing ---
+      val migrateSelfHeal = new Migrator(
+        ds, SupportedDatabase.Postgres, migrations, schema = "migrate_self_heal"
+      )
+      migrateSelfHeal.migrate()
+
+      val conn8 = ds.getConnection
+      conn8.setSchema("migrate_self_heal")
+      val rs8 = conn8.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+      rs8.next()
+      assert(rs8.getLong(1) == 1, "Expected 1 migration recorded after migrate self-heal on missing schema")
+      rs8.close()
+      conn8.close()
+
+      println("Test 8 passed: migrate self-heals when schema is missing")
+
+      // --- Test 9: canonical bug repro — DROP SCHEMA public CASCADE then cleanAndMigrate ---
+      // This mirrors verbatim the "Steps to reproduce" section of the bug report, and
+      // additionally verifies that the fix is idempotent: a second cleanAndMigrate() call
+      // after self-heal must also converge (the bug was described as self-perpetuating).
+      // Use a fresh embedded PG so earlier tests do not interfere with the public schema.
+      val pg2 = EmbeddedPostgres.start()
+      try {
+        val ds2 = pg2.getPostgresDatabase()
+
+        val dropPublic = ds2.getConnection
+        dropPublic.createStatement().execute("DROP SCHEMA public CASCADE")
+        dropPublic.close()
+
+        val canonicalMigrator = new Migrator(ds2, SupportedDatabase.Postgres, migrations)
+        canonicalMigrator.cleanAndMigrate() // must self-heal (default schema = "public")
+
+        val verify1 = ds2.getConnection
+        val rs9a = verify1.createStatement().executeQuery("SELECT COUNT(*) FROM public.nomad_migrations")
+        rs9a.next()
+        assert(rs9a.getLong(1) == 1, "Canonical repro: expected 1 migration after first cleanAndMigrate")
+        rs9a.close()
+        verify1.close()
+
+        // Second invocation — must not re-perpetuate the bug and must remain at 1 migration
+        canonicalMigrator.cleanAndMigrate()
+
+        val verify2 = ds2.getConnection
+        val rs9b = verify2.createStatement().executeQuery("SELECT COUNT(*) FROM public.nomad_migrations")
+        rs9b.next()
+        assert(rs9b.getLong(1) == 1, "Canonical repro: second cleanAndMigrate must be idempotent")
+        rs9b.close()
+        verify2.close()
+      } finally {
+        pg2.close()
+      }
+
+      println("Test 9 passed: canonical public-schema repro self-heals and is idempotent")
       println("All Postgres cleanAndMigrate tests passed!")
     } finally {
       pg.close()

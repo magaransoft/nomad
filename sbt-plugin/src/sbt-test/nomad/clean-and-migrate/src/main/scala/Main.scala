@@ -110,6 +110,42 @@ object Main {
     rs5.close()
     conn4.close()
 
+    // Test: cleanAndMigrate self-heals when schema does not exist (autoCreateSchema=true default)
+    val missingSchemaMigrator = new Migrator(
+      ds, SupportedDatabase.H2, migrations, schema = "NEVER_CREATED"
+    )
+    missingSchemaMigrator.cleanAndMigrate()
+
+    val conn6 = ds.getConnection
+    conn6.setSchema("NEVER_CREATED")
+    val rs6 = conn6.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+    rs6.next()
+    assert(rs6.getLong(1) == 1, "Expected 1 migration recorded after self-heal on missing schema")
+    rs6.close()
+    conn6.close()
+
+    // Test: autoCreateSchema=false must not silently create a missing schema.
+    // H2 surfaces the missing schema either at setSchema or at the first DDL attempt;
+    // we assert that a SQL-level failure mentioning the schema name bubbles up.
+    val strictMigrator = new Migrator(
+      ds, SupportedDatabase.H2, migrations,
+      schema = "STRICT_MISSING", autoCreateSchema = false
+    )
+    try {
+      strictMigrator.cleanAndMigrate()
+      throw new AssertionError("Expected failure when autoCreateSchema=false and schema is missing")
+    } catch {
+      case e: java.sql.SQLException =>
+        assert(
+          e.getMessage != null && e.getMessage.toUpperCase.contains("STRICT_MISSING"),
+          s"Expected H2 error referencing missing schema, got: ${e.getMessage}"
+        )
+      case e: RuntimeException if e.getCause.isInstanceOf[java.sql.SQLException]
+          && e.getCause.getMessage != null
+          && e.getCause.getMessage.toUpperCase.contains("STRICT_MISSING") =>
+        // expected — wrapped in Migrator's RuntimeException
+    }
+
     println("cleanAndMigrate tests passed!")
   }
 }
