@@ -9,7 +9,7 @@ object Main {
     val pg = sys.env.get("NOMAD_PG_TARBALL").filter(_.nonEmpty) match {
       case Some(path) =>
         // nix-store postgres defaults unix_socket_directories to /run/postgresql,
-        // which doesn't exist in this sandbox — point it at the data dir instead.
+        // which doesn't exist in this sandbox — point it at the JVM temp dir instead.
         EmbeddedPostgres
           .builder()
           .setPgBinaryResolver((_, _) => new java.io.FileInputStream(path))
