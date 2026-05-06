@@ -3,7 +3,20 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 
 object Main {
   def main(args: Array[String]): Unit = {
-    val pg = EmbeddedPostgres.start()
+    // On NixOS zonky's bundled generic-Linux binaries fail to load. NOMAD_PG_TARBALL
+    // (set by the flake devshell) overrides the binary source with a tarball of the
+    // system postgres.
+    val pg = sys.env.get("NOMAD_PG_TARBALL").filter(_.nonEmpty) match {
+      case Some(path) =>
+        // nix-store postgres defaults unix_socket_directories to /run/postgresql,
+        // which doesn't exist in this sandbox — point it at the data dir instead.
+        EmbeddedPostgres
+          .builder()
+          .setPgBinaryResolver((_, _) => new java.io.FileInputStream(path))
+          .setServerConfig("unix_socket_directories", System.getProperty("java.io.tmpdir"))
+          .start()
+      case None => EmbeddedPostgres.start()
+    }
 
     try {
       val ds = pg.getPostgresDatabase()
