@@ -51,5 +51,4 @@ metals.sbt
 # Claude Code
 .claude/
 MEMORY.md
-.envrc
 .direnv/
