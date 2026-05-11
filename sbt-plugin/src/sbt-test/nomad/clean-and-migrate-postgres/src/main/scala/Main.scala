@@ -2,11 +2,11 @@ import nomad.{Migrator, SQLMigration, SupportedDatabase}
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 
 object Main {
-  def main(args: Array[String]): Unit = {
-    // On NixOS zonky's bundled generic-Linux binaries fail to load. NOMAD_PG_TARBALL
-    // (set by the flake devshell) overrides the binary source with a tarball of the
-    // system postgres.
-    val pg = sys.env.get("NOMAD_PG_TARBALL").filter(_.nonEmpty) match {
+  // On NixOS zonky's bundled generic-Linux binaries fail to load. NOMAD_PG_TARBALL
+  // (set by the flake devshell) overrides the binary source with a tarball of the
+  // system postgres.
+  private def startEmbeddedPostgres(): EmbeddedPostgres =
+    sys.env.get("NOMAD_PG_TARBALL").filter(_.nonEmpty) match {
       case Some(path) =>
         // nix-store postgres defaults unix_socket_directories to /run/postgresql,
         // which doesn't exist in this sandbox — point it at the JVM temp dir instead.
@@ -17,6 +17,9 @@ object Main {
           .start()
       case None => EmbeddedPostgres.start()
     }
+
+  def main(args: Array[String]): Unit = {
+    val pg = startEmbeddedPostgres()
 
     try {
       val ds = pg.getPostgresDatabase()
@@ -218,7 +221,7 @@ object Main {
       // additionally verifies that the fix is idempotent: a second cleanAndMigrate() call
       // after self-heal must also converge (the bug was described as self-perpetuating).
       // Use a fresh embedded PG so earlier tests do not interfere with the public schema.
-      val pg2 = EmbeddedPostgres.start()
+      val pg2 = startEmbeddedPostgres()
       try {
         val ds2 = pg2.getPostgresDatabase()
 
