@@ -293,6 +293,8 @@ object NomadPlugin extends AutoPlugin {
     val nomadManifestFile = settingKey[File]("Path to the Scala manifest file defining migration order")
     val nomadManifestClass = settingKey[String]("Fully qualified class name of the NomadMigrations implementation")
     val nomadHistoryTable = settingKey[String]("Name of the database table used to track applied migrations")
+    val nomadSchema = settingKey[String]("Database schema used for migrations and history tracking")
+    val nomadAutoCreateSchema = settingKey[Boolean]("Create the configured schema via CREATE SCHEMA IF NOT EXISTS before migrate / cleanAndMigrate. Set to false for least-privilege roles.")
     val nomadGraalSync = settingKey[Boolean]("Automatically sync migration resources to GraalVM native-image resource-config.json")
     val nomadGraalResourceConfigFile = settingKey[File]("Path to the GraalVM resource-config.json file")
     val nomadImportFlyway = taskKey[Unit]("Import Flyway versioned migrations into the Nomad manifest")
@@ -306,6 +308,8 @@ object NomadPlugin extends AutoPlugin {
     nomadManifestFile := (Compile / scalaSource).value / "Nomad.scala",
     nomadManifestClass := ManifestNaming.classNameFromFile(nomadManifestFile.value, (Compile / scalaSource).value),
     nomadHistoryTable := "nomad_migrations",
+    nomadSchema := "public",
+    nomadAutoCreateSchema := true,
     nomadGraalSync := false,
     nomadGraalResourceConfigFile := (Compile / resourceDirectory).value / "META-INF" / "native-image" / "resource-config.json",
     nomadInit / aggregate := false,
@@ -330,6 +334,8 @@ object NomadPlugin extends AutoPlugin {
       val cp = (Compile / fullClasspath).value.files
       val className = nomadManifestClass.value
       val table = nomadHistoryTable.value
+      val schema = nomadSchema.value
+      val autoCreateSchema = nomadAutoCreateSchema.value
 
       val loader = new ChildFirstClassLoader(
         cp.map(_.toURI.toURL).toArray,
@@ -348,8 +354,8 @@ object NomadPlugin extends AutoPlugin {
         val database = databaseMethod.invoke(instance)
 
         val migratorClass = loader.loadClass("nomad.Migrator")
-        val constructor = migratorClass.getConstructors.head
-        val migrator = constructor.newInstance(datasource, database, migrations, table, "public")
+        val constructor = migratorClass.getConstructors.maxBy(_.getParameterCount)
+        val migrator = constructor.newInstance(datasource, database, migrations, table, schema, java.lang.Boolean.valueOf(autoCreateSchema))
         val migrateMethod = migratorClass.getMethod("migrate")
         migrateMethod.invoke(migrator)
       } finally {
@@ -370,6 +376,8 @@ object NomadPlugin extends AutoPlugin {
       val cp = (Compile / fullClasspath).value.files
       val className = nomadManifestClass.value
       val table = nomadHistoryTable.value
+      val schema = nomadSchema.value
+      val autoCreateSchema = nomadAutoCreateSchema.value
 
       val loader = new ChildFirstClassLoader(
         cp.map(_.toURI.toURL).toArray,
@@ -388,8 +396,8 @@ object NomadPlugin extends AutoPlugin {
         val database = databaseMethod.invoke(instance)
 
         val migratorClass = loader.loadClass("nomad.Migrator")
-        val constructor = migratorClass.getConstructors.head
-        val migrator = constructor.newInstance(datasource, database, migrations, table, "public")
+        val constructor = migratorClass.getConstructors.maxBy(_.getParameterCount)
+        val migrator = constructor.newInstance(datasource, database, migrations, table, schema, java.lang.Boolean.valueOf(autoCreateSchema))
         val printStatusMethod = migratorClass.getMethod("printStatus")
         val hasProblems = printStatusMethod.invoke(migrator).asInstanceOf[Boolean]
 
@@ -450,6 +458,8 @@ object NomadPlugin extends AutoPlugin {
       val cp = (Compile / fullClasspath).value.files
       val className = nomadManifestClass.value
       val table = nomadHistoryTable.value
+      val schema = nomadSchema.value
+      val autoCreateSchema = nomadAutoCreateSchema.value
       val base = baseDirectory.value
 
       if (!manifest.exists()) {
@@ -539,8 +549,8 @@ object NomadPlugin extends AutoPlugin {
             val migrations = migrationsMethod.invoke(instance)
 
             val migratorClass = loader.loadClass("nomad.Migrator")
-            val constructor = migratorClass.getConstructors.head
-            val migrator = constructor.newInstance(datasource, database, migrations, table, "public")
+            val constructor = migratorClass.getConstructors.maxBy(_.getParameterCount)
+            val migrator = constructor.newInstance(datasource, database, migrations, table, schema, java.lang.Boolean.valueOf(autoCreateSchema))
             val analyzeMethod = migratorClass.getMethod("analyzeFlywayHistoryImport", classOf[String], classOf[Array[String]])
             val analysis = analyzeMethod.invoke(migrator, flywayTable, allPaths.toArray)
 

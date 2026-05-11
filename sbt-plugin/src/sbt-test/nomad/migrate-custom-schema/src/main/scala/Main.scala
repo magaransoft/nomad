@@ -45,5 +45,42 @@ object Main {
     assert(!pub.contains("NOMAD_MIGRATIONS"), s"'nomad_migrations' should NOT be in PUBLIC schema")
 
     println("Custom schema migrate test passed!")
+
+    // Test: migrate self-heals when the configured schema does not exist
+    val selfHealMigrator = new Migrator(
+      ds, SupportedDatabase.H2, migrations, schema = "NOT_THERE_YET"
+    )
+    selfHealMigrator.migrate()
+
+    val conn3 = ds.getConnection
+    conn3.setSchema("NOT_THERE_YET")
+    val rs = conn3.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+    rs.next()
+    assert(rs.getLong(1) == 1, "Expected 1 migration recorded after migrate self-heal on missing schema")
+    rs.close()
+    conn3.close()
+
+    // Test: migrate with autoCreateSchema=false must fail when schema is missing.
+    // Assert a SQL-level failure that references the schema name — not just any error.
+    val strictMigrator = new Migrator(
+      ds, SupportedDatabase.H2, migrations,
+      schema = "STRICT_MISSING_MIGRATE", autoCreateSchema = false
+    )
+    try {
+      strictMigrator.migrate()
+      throw new AssertionError("Expected migrate() to fail when autoCreateSchema=false and schema is missing")
+    } catch {
+      case e: java.sql.SQLException =>
+        assert(
+          e.getMessage != null && e.getMessage.toUpperCase.contains("STRICT_MISSING_MIGRATE"),
+          s"Expected H2 error referencing missing schema, got: ${e.getMessage}"
+        )
+      case e: RuntimeException if e.getCause.isInstanceOf[java.sql.SQLException]
+          && e.getCause.getMessage != null
+          && e.getCause.getMessage.toUpperCase.contains("STRICT_MISSING_MIGRATE") =>
+        // expected — wrapped in Migrator's RuntimeException
+    }
+
+    println("migrate self-heal tests passed!")
   }
 }

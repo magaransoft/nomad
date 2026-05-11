@@ -19,14 +19,35 @@ import scala.util.Using
   * @param migrations the ordered list of migrations to apply
   * @param historyTable the name of the table used to track applied migrations
   * @param schema the database schema to use for migrations and history tracking
+  * @param autoCreateSchema if true (default), the configured schema is created
+  *                         at the start of `migrate()` and `cleanAndMigrate()`
+  *                         when it does not already exist. Existence is probed
+  *                         via `information_schema.schemata` (readable by
+  *                         `PUBLIC`) and `CREATE SCHEMA` runs only on the
+  *                         missing-schema path, so least-privilege roles with
+  *                         `USAGE` on a pre-existing schema are unaffected.
+  *                         Set to false when running under a role that must
+  *                         never attempt schema creation under any condition.
   */
 class Migrator(
   datasource: DataSource,
   db: SupportedDatabase,
   migrations: Vector[Migration],
   historyTable: String = "nomad_migrations",
-  schema: String = "public"
+  schema: String = "public",
+  autoCreateSchema: Boolean = true
 ) {
+
+  // Preserves the 5-arg constructor signature shipped in 0.1.0 so that
+  // Java callers, pre-compiled binaries, and reflective callers using
+  // the old arity keep working after the 0.1.1 bump.
+  def this(
+    datasource: DataSource,
+    db: SupportedDatabase,
+    migrations: Vector[Migration],
+    historyTable: String,
+    schema: String
+  ) = this(datasource, db, migrations, historyTable, schema, autoCreateSchema = true)
 
   final case class FlywayImportAnalysis(
     exactMatchCount: Int,
@@ -68,6 +89,7 @@ class Migrator(
   def migrate(): Unit = {
     val conn = datasource.getConnection
     try {
+      if (autoCreateSchema) ensureSchemaExists(conn)
       setSchemaIfNeeded(conn)
       ensureHistoryTable(conn)
       val applied = loadApplied(conn)
@@ -187,6 +209,7 @@ class Migrator(
   def cleanAndMigrate(): Unit = {
     val conn = datasource.getConnection
     try {
+      if (autoCreateSchema) ensureSchemaExists(conn)
       setSchemaIfNeeded(conn)
       if (isSchemaEmpty(conn)) {
         logger.info("Instructed to clean schema, but schema is empty, nothing to clean.")
@@ -521,6 +544,41 @@ class Migrator(
     val current = conn.getSchema
     if (current == null || !current.equalsIgnoreCase(schema)) {
       conn.setSchema(schema)
+    }
+  }
+
+  private def ensureSchemaExists(conn: Connection): Unit = {
+    // Probe via information_schema.schemata (readable by PUBLIC, no privilege
+    // required) and only issue CREATE SCHEMA when absent. Postgres checks
+    // ACL_CREATE on the database before IF NOT EXISTS short-circuits, so a
+    // bare CREATE SCHEMA IF NOT EXISTS would regress least-privilege roles
+    // that hold USAGE on a pre-existing schema but lack CREATE on the database.
+    //
+    // The probe-then-create sequence is TOCTOU-racy on concurrent cold start:
+    // two horizontally scaled processes can both observe the schema as missing
+    // and then race the CREATE. Keep IF NOT EXISTS on the create path so the
+    // loser's statement is a no-op instead of a 'schema already exists' error.
+    // The ACL_CREATE check IF NOT EXISTS still triggers is acceptable here
+    // because we only reach this branch when the schema was actually missing
+    // at probe time — i.e., forward progress already requires CREATE on the
+    // database, so failing without it is the correct outcome.
+    if (schemaExists(conn)) return
+    Using.resource(conn.createStatement()) { stmt =>
+      db match {
+        case SupportedDatabase.Postgres =>
+          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
+        case SupportedDatabase.H2 =>
+          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
+      }
+    }
+  }
+
+  private def schemaExists(conn: Connection): Boolean = {
+    Using.resource(
+      conn.prepareStatement("SELECT 1 FROM information_schema.schemata WHERE schema_name = ?")
+    ) { ps =>
+      ps.setString(1, schema)
+      Using.resource(ps.executeQuery())(_.next())
     }
   }
 

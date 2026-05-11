@@ -2,11 +2,11 @@ import nomad.{Migrator, SQLMigration, SupportedDatabase}
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 
 object Main {
-  def main(args: Array[String]): Unit = {
-    // On NixOS zonky's bundled generic-Linux binaries fail to load. NOMAD_PG_TARBALL
-    // (set by the flake devshell) overrides the binary source with a tarball of the
-    // system postgres.
-    val pg = sys.env.get("NOMAD_PG_TARBALL").filter(_.nonEmpty) match {
+  // On NixOS zonky's bundled generic-Linux binaries fail to load. NOMAD_PG_TARBALL
+  // (set by the flake devshell) overrides the binary source with a tarball of the
+  // system postgres.
+  private def startEmbeddedPostgres(): EmbeddedPostgres =
+    sys.env.get("NOMAD_PG_TARBALL").filter(_.nonEmpty) match {
       case Some(path) =>
         // nix-store postgres defaults unix_socket_directories to /run/postgresql,
         // which doesn't exist in this sandbox — point it at the JVM temp dir instead.
@@ -17,6 +17,9 @@ object Main {
           .start()
       case None => EmbeddedPostgres.start()
     }
+
+  def main(args: Array[String]): Unit = {
+    val pg = startEmbeddedPostgres()
 
     try {
       val ds = pg.getPostgresDatabase()
@@ -151,6 +154,150 @@ object Main {
       conn6.close()
 
       println("Test 5 passed: cleanAndMigrate on empty schema skips clean and migrates")
+
+      // --- Test 6: cleanAndMigrate self-heals when schema does not exist (autoCreateSchema=true) ---
+      val setup5 = ds.getConnection
+      setup5.createStatement().execute("CREATE SCHEMA IF NOT EXISTS will_be_dropped")
+      setup5.close()
+      // Drop it to simulate the bug scenario
+      val drop = ds.getConnection
+      drop.createStatement().execute("DROP SCHEMA will_be_dropped CASCADE")
+      drop.close()
+
+      val missingSchemaMigrator = new Migrator(
+        ds, SupportedDatabase.Postgres, migrations, schema = "will_be_dropped"
+      )
+      missingSchemaMigrator.cleanAndMigrate()
+
+      val conn7 = ds.getConnection
+      conn7.setSchema("will_be_dropped")
+      val rs7 = conn7.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+      rs7.next()
+      assert(rs7.getLong(1) == 1, "Expected 1 migration recorded after self-heal on missing schema")
+      rs7.close()
+      conn7.close()
+
+      println("Test 6 passed: cleanAndMigrate self-heals when schema is missing")
+
+      // --- Test 7: autoCreateSchema=false reproduces the original bug (no silent creation) ---
+      // The exact symptom from the bug report: PG rejects CREATE TYPE because the missing
+      // schema left search_path pointing at a non-existent namespace.
+      val strictMigrator = new Migrator(
+        ds, SupportedDatabase.Postgres, migrations,
+        schema = "never_created", autoCreateSchema = false
+      )
+      try {
+        strictMigrator.cleanAndMigrate()
+        throw new AssertionError("Expected failure when autoCreateSchema=false and schema is missing")
+      } catch {
+        case e: RuntimeException if e.getCause != null
+            && e.getCause.getMessage != null
+            && e.getCause.getMessage.contains("no schema has been selected") =>
+          // expected — this is exactly the original bug symptom surfacing when opt-out is chosen
+        case e: org.postgresql.util.PSQLException if e.getMessage.contains("no schema has been selected") =>
+          // expected — same symptom surfaced directly
+      }
+
+      println("Test 7 passed: autoCreateSchema=false reproduces original bug symptom")
+
+      // --- Test 8: migrate() (without clean) self-heals when schema is missing ---
+      val migrateSelfHeal = new Migrator(
+        ds, SupportedDatabase.Postgres, migrations, schema = "migrate_self_heal"
+      )
+      migrateSelfHeal.migrate()
+
+      val conn8 = ds.getConnection
+      conn8.setSchema("migrate_self_heal")
+      val rs8 = conn8.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+      rs8.next()
+      assert(rs8.getLong(1) == 1, "Expected 1 migration recorded after migrate self-heal on missing schema")
+      rs8.close()
+      conn8.close()
+
+      println("Test 8 passed: migrate self-heals when schema is missing")
+
+      // --- Test 9: canonical bug repro — DROP SCHEMA public CASCADE then cleanAndMigrate ---
+      // This mirrors verbatim the "Steps to reproduce" section of the bug report, and
+      // additionally verifies that the fix is idempotent: a second cleanAndMigrate() call
+      // after self-heal must also converge (the bug was described as self-perpetuating).
+      // Use a fresh embedded PG so earlier tests do not interfere with the public schema.
+      val pg2 = startEmbeddedPostgres()
+      try {
+        val ds2 = pg2.getPostgresDatabase()
+
+        val dropPublic = ds2.getConnection
+        dropPublic.createStatement().execute("DROP SCHEMA public CASCADE")
+        dropPublic.close()
+
+        val canonicalMigrator = new Migrator(ds2, SupportedDatabase.Postgres, migrations)
+        canonicalMigrator.cleanAndMigrate() // must self-heal (default schema = "public")
+
+        val verify1 = ds2.getConnection
+        val rs9a = verify1.createStatement().executeQuery("SELECT COUNT(*) FROM public.nomad_migrations")
+        rs9a.next()
+        assert(rs9a.getLong(1) == 1, "Canonical repro: expected 1 migration after first cleanAndMigrate")
+        rs9a.close()
+        verify1.close()
+
+        // Second invocation — must not re-perpetuate the bug and must remain at 1 migration
+        canonicalMigrator.cleanAndMigrate()
+
+        val verify2 = ds2.getConnection
+        val rs9b = verify2.createStatement().executeQuery("SELECT COUNT(*) FROM public.nomad_migrations")
+        rs9b.next()
+        assert(rs9b.getLong(1) == 1, "Canonical repro: second cleanAndMigrate must be idempotent")
+        rs9b.close()
+        verify2.close()
+      } finally {
+        pg2.close()
+      }
+
+      println("Test 9 passed: canonical public-schema repro self-heals and is idempotent")
+
+      // --- Test 10: autoCreateSchema=true on a pre-existing schema must not require CREATE on the database ---
+      // Regression: Postgres checks ACL_CREATE on the database before IF NOT EXISTS
+      // short-circuits, so a naive CREATE SCHEMA IF NOT EXISTS would fail for a
+      // least-privilege role even when the target schema already exists. The probe-
+      // then-create implementation must take the no-op path for this role.
+      val pg3 = startEmbeddedPostgres()
+      try {
+        val dsAdmin = pg3.getPostgresDatabase()
+        val admin = dsAdmin.getConnection
+        try {
+          admin.createStatement().execute("CREATE ROLE limited_user LOGIN")
+          admin.createStatement().execute("CREATE SCHEMA limited_pre_existing")
+          admin.createStatement().execute(
+            "GRANT USAGE, CREATE ON SCHEMA limited_pre_existing TO limited_user"
+          )
+          // Defense-in-depth: revoke any default CREATE-on-database grant. PG 15+
+          // already revokes CREATE on database from PUBLIC by default; older PGs do not.
+          admin.createStatement().execute("REVOKE CREATE ON DATABASE postgres FROM PUBLIC")
+        } finally {
+          admin.close()
+        }
+
+        val dsLimited = pg3.getDatabase("limited_user", "postgres")
+        val limitedMigrator = new Migrator(
+          dsLimited, SupportedDatabase.Postgres, migrations, schema = "limited_pre_existing"
+        )
+        limitedMigrator.migrate()
+
+        val verifyLimited = dsLimited.getConnection
+        try {
+          verifyLimited.setSchema("limited_pre_existing")
+          val rs10 = verifyLimited.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+          rs10.next()
+          assert(rs10.getLong(1) == 1, "Expected 1 migration recorded by limited role on pre-existing schema")
+          rs10.close()
+        } finally {
+          verifyLimited.close()
+        }
+      } finally {
+        pg3.close()
+      }
+
+      println("Test 10 passed: autoCreateSchema=true on pre-existing schema requires no CREATE on database")
+
       println("All Postgres cleanAndMigrate tests passed!")
     } finally {
       pg.close()
