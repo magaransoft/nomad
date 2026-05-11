@@ -253,6 +253,51 @@ object Main {
       }
 
       println("Test 9 passed: canonical public-schema repro self-heals and is idempotent")
+
+      // --- Test 10: autoCreateSchema=true on a pre-existing schema must not require CREATE on the database ---
+      // Regression: Postgres checks ACL_CREATE on the database before IF NOT EXISTS
+      // short-circuits, so a naive CREATE SCHEMA IF NOT EXISTS would fail for a
+      // least-privilege role even when the target schema already exists. The probe-
+      // then-create implementation must take the no-op path for this role.
+      val pg3 = startEmbeddedPostgres()
+      try {
+        val dsAdmin = pg3.getPostgresDatabase()
+        val admin = dsAdmin.getConnection
+        try {
+          admin.createStatement().execute("CREATE ROLE limited_user LOGIN")
+          admin.createStatement().execute("CREATE SCHEMA limited_pre_existing")
+          admin.createStatement().execute(
+            "GRANT USAGE, CREATE ON SCHEMA limited_pre_existing TO limited_user"
+          )
+          // Defense-in-depth: revoke any default CREATE-on-database grant. PG 15+
+          // already revokes CREATE on database from PUBLIC by default; older PGs do not.
+          admin.createStatement().execute("REVOKE CREATE ON DATABASE postgres FROM PUBLIC")
+        } finally {
+          admin.close()
+        }
+
+        val dsLimited = pg3.getDatabase("limited_user", "postgres")
+        val limitedMigrator = new Migrator(
+          dsLimited, SupportedDatabase.Postgres, migrations, schema = "limited_pre_existing"
+        )
+        limitedMigrator.migrate()
+
+        val verifyLimited = dsLimited.getConnection
+        try {
+          verifyLimited.setSchema("limited_pre_existing")
+          val rs10 = verifyLimited.createStatement().executeQuery("SELECT COUNT(*) FROM nomad_migrations")
+          rs10.next()
+          assert(rs10.getLong(1) == 1, "Expected 1 migration recorded by limited role on pre-existing schema")
+          rs10.close()
+        } finally {
+          verifyLimited.close()
+        }
+      } finally {
+        pg3.close()
+      }
+
+      println("Test 10 passed: autoCreateSchema=true on pre-existing schema requires no CREATE on database")
+
       println("All Postgres cleanAndMigrate tests passed!")
     } finally {
       pg.close()

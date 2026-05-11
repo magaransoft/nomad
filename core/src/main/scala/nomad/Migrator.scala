@@ -20,9 +20,14 @@ import scala.util.Using
   * @param historyTable the name of the table used to track applied migrations
   * @param schema the database schema to use for migrations and history tracking
   * @param autoCreateSchema if true (default), the configured schema is created
-  *                         via `CREATE SCHEMA IF NOT EXISTS` at the start of
-  *                         `migrate()` and `cleanAndMigrate()`. Set to false when
-  *                         running under a role that lacks `CREATE` privileges.
+  *                         at the start of `migrate()` and `cleanAndMigrate()`
+  *                         when it does not already exist. Existence is probed
+  *                         via `information_schema.schemata` (readable by
+  *                         `PUBLIC`) and `CREATE SCHEMA` runs only on the
+  *                         missing-schema path, so least-privilege roles with
+  *                         `USAGE` on a pre-existing schema are unaffected.
+  *                         Set to false when running under a role that must
+  *                         never attempt schema creation under any condition.
   */
 class Migrator(
   datasource: DataSource,
@@ -543,13 +548,28 @@ class Migrator(
   }
 
   private def ensureSchemaExists(conn: Connection): Unit = {
+    // Probe via information_schema.schemata (readable by PUBLIC, no privilege
+    // required) and only issue CREATE SCHEMA when absent. Postgres checks
+    // ACL_CREATE on the database before IF NOT EXISTS short-circuits, so a
+    // bare CREATE SCHEMA IF NOT EXISTS would regress least-privilege roles
+    // that hold USAGE on a pre-existing schema but lack CREATE on the database.
+    if (schemaExists(conn)) return
     Using.resource(conn.createStatement()) { stmt =>
       db match {
         case SupportedDatabase.Postgres =>
-          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
+          stmt.execute(s"""CREATE SCHEMA "$schema"""")
         case SupportedDatabase.H2 =>
-          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
+          stmt.execute(s"""CREATE SCHEMA "$schema"""")
       }
+    }
+  }
+
+  private def schemaExists(conn: Connection): Boolean = {
+    Using.resource(
+      conn.prepareStatement("SELECT 1 FROM information_schema.schemata WHERE schema_name = ?")
+    ) { ps =>
+      ps.setString(1, schema)
+      Using.resource(ps.executeQuery())(_.next())
     }
   }
 
