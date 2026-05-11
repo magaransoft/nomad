@@ -553,13 +553,22 @@ class Migrator(
     // ACL_CREATE on the database before IF NOT EXISTS short-circuits, so a
     // bare CREATE SCHEMA IF NOT EXISTS would regress least-privilege roles
     // that hold USAGE on a pre-existing schema but lack CREATE on the database.
+    //
+    // The probe-then-create sequence is TOCTOU-racy on concurrent cold start:
+    // two horizontally scaled processes can both observe the schema as missing
+    // and then race the CREATE. Keep IF NOT EXISTS on the create path so the
+    // loser's statement is a no-op instead of a 'schema already exists' error.
+    // The ACL_CREATE check IF NOT EXISTS still triggers is acceptable here
+    // because we only reach this branch when the schema was actually missing
+    // at probe time — i.e., forward progress already requires CREATE on the
+    // database, so failing without it is the correct outcome.
     if (schemaExists(conn)) return
     Using.resource(conn.createStatement()) { stmt =>
       db match {
         case SupportedDatabase.Postgres =>
-          stmt.execute(s"""CREATE SCHEMA "$schema"""")
+          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
         case SupportedDatabase.H2 =>
-          stmt.execute(s"""CREATE SCHEMA "$schema"""")
+          stmt.execute(s"""CREATE SCHEMA IF NOT EXISTS "$schema"""")
       }
     }
   }
