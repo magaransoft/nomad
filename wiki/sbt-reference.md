@@ -11,6 +11,7 @@ Tasks
 | `nomadMigrate` | Run all pending migrations |
 | `nomadStatus` | Show migration status (fails if problems detected) |
 | `nomadImportFlyway` | Import Flyway versioned migrations into the manifest and optionally import schema history |
+| `nomadRebase` | Drop the target database and re-clone it from a long-lived rebase database via a fast Postgres `CREATE DATABASE ... WITH TEMPLATE` copy, then run any pending migrations. Postgres only; requires `rebaseDatasource` to be set on the manifest. See [Rebase](Rebase.md). |
 
 Settings
 ========

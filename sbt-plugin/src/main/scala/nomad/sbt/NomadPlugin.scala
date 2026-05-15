@@ -298,6 +298,7 @@ object NomadPlugin extends AutoPlugin {
     val nomadGraalSync = settingKey[Boolean]("Automatically sync migration resources to GraalVM native-image resource-config.json")
     val nomadGraalResourceConfigFile = settingKey[File]("Path to the GraalVM resource-config.json file")
     val nomadImportFlyway = taskKey[Unit]("Import Flyway versioned migrations into the Nomad manifest")
+    val nomadRebase = taskKey[Unit]("Drop and re-clone the target database from a rebase template database, then run pending migrations")
   }
 
   import autoImport._
@@ -317,6 +318,7 @@ object NomadPlugin extends AutoPlugin {
     nomadStatus / aggregate := false,
     nomadCreate / aggregate := false,
     nomadImportFlyway / aggregate := false,
+    nomadRebase / aggregate := false,
     nomadInit := {
       val log = streams.value.log
       val manifest = nomadManifestFile.value
@@ -599,6 +601,75 @@ object NomadPlugin extends AutoPlugin {
             loader.close()
           }
         }
+      }
+    },
+    nomadRebase := {
+      val log = streams.value.log
+      val interaction = interactionService.value
+      val cp = (Compile / fullClasspath).value.files
+      val className = nomadManifestClass.value
+      val table = nomadHistoryTable.value
+      val schema = nomadSchema.value
+      val autoCreateSchema = nomadAutoCreateSchema.value
+
+      val loader = new ChildFirstClassLoader(
+        cp.map(_.toURI.toURL).toArray,
+        getClass.getClassLoader
+      )
+
+      try {
+        val manifestClass = loader.loadClass(className + "$")
+        val instance = manifestClass.getField("MODULE$").get(null)
+        val datasourceMethod = manifestClass.getMethod("datasource")
+        val rebaseDatasourceMethod = manifestClass.getMethod("rebaseDatasource")
+        val databaseMethod = manifestClass.getMethod("database")
+        val migrationsMethod = manifestClass.getMethod("migrations")
+
+        val datasource = datasourceMethod.invoke(instance)
+        val rebaseDsOpt = rebaseDatasourceMethod.invoke(instance)
+        val database = databaseMethod.invoke(instance)
+        val migrations = migrationsMethod.invoke(instance)
+
+        // `rebaseDsOpt` is a scala.Option from the user's Scala 3 stdlib (loaded via the child-first
+        // classloader), distinct from this plugin's Scala 2.12 scala.Option. We invoke `isEmpty` /
+        // `get` reflectively on the instance's own class to stay classloader-agnostic.
+        val isEmpty = rebaseDsOpt.getClass.getMethod("isEmpty").invoke(rebaseDsOpt).asInstanceOf[Boolean]
+        if (isEmpty) {
+          throw new MessageOnlyException(
+            "rebaseDatasource is not configured. Override `def rebaseDatasource: Option[DataSource]` " +
+              "on your NomadMigrations manifest to enable nomadRebase."
+          )
+        }
+        val rebaseDs = rebaseDsOpt.getClass.getMethod("get").invoke(rebaseDsOpt)
+
+        log.warn(
+          "nomadRebase is destructive — it drops the target database and re-clones it from the rebase database."
+        )
+        val confirmed = Prompting.confirm(
+          interaction,
+          "Type 'y' to proceed, anything else to cancel: ",
+          default = false
+        )
+        if (!confirmed) {
+          log.info("Rebase canceled.")
+        } else {
+          val rebaserClass = loader.loadClass("nomad.Rebaser")
+          val rebaserCtor = rebaserClass.getConstructors.maxBy(_.getParameterCount)
+          val rebaser = rebaserCtor.newInstance(datasource, rebaseDs, database)
+          val rebaseMethod = rebaserClass.getMethod("rebase")
+          rebaseMethod.invoke(rebaser)
+
+          val migratorClass = loader.loadClass("nomad.Migrator")
+          val migratorCtor = migratorClass.getConstructors.maxBy(_.getParameterCount)
+          val migrator = migratorCtor.newInstance(
+            datasource, database, migrations, table, schema, java.lang.Boolean.valueOf(autoCreateSchema)
+          )
+          val migrateMethod = migratorClass.getMethod("migrate")
+          migrateMethod.invoke(migrator)
+          ()
+        }
+      } finally {
+        loader.close()
       }
     }
   )
