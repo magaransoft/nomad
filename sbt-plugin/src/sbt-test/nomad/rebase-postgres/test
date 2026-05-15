@@ -1,0 +1,4 @@
+# Tests Rebaser against a real PostgreSQL via embedded-postgres.
+# Covers: rebase + migrate happy path, H2 rejection, target == rebase rejection,
+# datasources on different servers rejection.
+> run

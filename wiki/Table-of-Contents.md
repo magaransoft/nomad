@@ -15,6 +15,7 @@ Migrations
 * [Scala migrations](Scala-migrations.md)
 * [Migration status](Migration-status.md)
 * [Clean and migrate](Clean-and-migrate.md)
+* [Rebase](Rebase.md)
 
 Configuration
 -------------
